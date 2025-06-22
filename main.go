@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -12,7 +13,6 @@ import (
 
 type CompressionConfig struct {
 	NumWorkers       int
-	Algorithm        string
 	MaxMemoryUsage   int // MegaBytes
 	CompressionLevel int
 	ChunkSize        int // MegaBytes
@@ -73,6 +73,9 @@ func (pc *ParallelCompressor) Start() {
 		pc.workerWG.Add(1)
 		go pc.worker(i)
 	}
+
+	pc.resultWG.Add(1)
+	go pc.processResult()
 }
 
 func (pc *ParallelCompressor) worker(workerID int) {
@@ -85,6 +88,7 @@ func (pc *ParallelCompressor) worker(workerID int) {
 				return
 			}
 
+			fmt.Printf("Job Picked By Worker: %d\n", workerID)
 			result := pc.processJob(job)
 
 			select {
@@ -143,4 +147,69 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 	return result
 }
 
-func main() {}
+func (pc *ParallelCompressor) processResult() {
+	defer pc.resultWG.Done()
+
+	for {
+		select {
+		case result := <-pc.resultQueue:
+			if result == nil {
+				return
+			}
+
+			if result.Error != nil {
+				fmt.Printf("Result Error: %s\n", result.Error.Error())
+			} else {
+				fmt.Printf("Compression Successfull: %s\n", result.Job.OutputPath)
+			}
+
+		case <-pc.ctx.Done():
+			return
+		}
+	}
+}
+
+func main() {
+	config := &CompressionConfig{
+		NumWorkers:       0,
+		MaxMemoryUsage:   4 * 1024 * 1024,
+		CompressionLevel: 10,
+		ChunkSize:        4,
+	}
+
+	compressor := NewParallelCompressor(config)
+
+	compressor.Start()
+
+	files := []string{}
+
+	for i := 1; i <= 11; i++ {
+		files = append(files, fmt.Sprintf("testdata/book%d.pdf", i))
+	}
+
+	now := time.Now()
+
+	for _, inputPath := range files {
+		outputPath := inputPath + "_compressed"
+
+		job := &Job{
+			InputPath:  inputPath,
+			OutputPath: outputPath,
+			Ctx:        context.Background(),
+		}
+
+		compressor.jobQueue <- job
+	}
+
+	close(compressor.jobQueue)
+	compressor.workerWG.Wait()
+
+	close(compressor.resultQueue)
+	compressor.resultWG.Wait()
+
+	t := time.Since(now)
+
+	fmt.Printf("Time Taken: %d\n", t.Milliseconds())
+
+	fmt.Println("All compression jobs completed.")
+}
