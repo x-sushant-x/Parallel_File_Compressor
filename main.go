@@ -45,6 +45,7 @@ type ParallelCompressor struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	bufferPool  sync.Pool
+	semaphore   chan struct{}
 }
 
 func NewParallelCompressor(config *CompressionConfig) *ParallelCompressor {
@@ -62,10 +63,11 @@ func NewParallelCompressor(config *CompressionConfig) *ParallelCompressor {
 		cancel:      cancel,
 		bufferPool: sync.Pool{
 			New: func() any {
-				buf := make([]byte, config.ChunkSize*1024*1024)
+				buf := make([]byte, config.ChunkSize)
 				return &buf
 			},
 		},
+		semaphore: make(chan struct{}, config.MaxMemoryUsage/config.ChunkSize),
 	}
 }
 
@@ -132,6 +134,16 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 }
 
 func (pc *ParallelCompressor) compress(inputFile io.Reader, outputFile io.Writer) error {
+	select {
+	case pc.semaphore <- struct{}{}:
+	case <-pc.ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for memory slot")
+	}
+
+	defer func() {
+		<-pc.semaphore
+	}()
+
 	gzipWriter, err := gzip.NewWriterLevel(outputFile, pc.config.CompressionLevel)
 	if err != nil {
 		return err
@@ -200,9 +212,9 @@ func main() {
 
 	config := &CompressionConfig{
 		NumWorkers:       8,
-		MaxMemoryUsage:   4 * 1024 * 1024,
+		MaxMemoryUsage:   32 * 1024 * 1024,
 		CompressionLevel: 9,
-		ChunkSize:        1,
+		ChunkSize:        2 * 1024 * 1024,
 	}
 
 	compressor := NewParallelCompressor(config)
@@ -252,5 +264,6 @@ func printMemUsage(label string) {
 	fmt.Printf("\tTotalAlloc = %v MiB", m.TotalAlloc/1024/1024)
 	fmt.Printf("\tSys = %v MiB", m.Sys/1024/1024)
 
+	fmt.Println()
 	fmt.Println()
 }
