@@ -56,15 +56,46 @@ func NewParallelCompressor(config *CompressionConfig) *ParallelCompressor {
 
 	return &ParallelCompressor{
 		config:      config,
-		jobQueue:    make(chan *Job),
-		resultQueue: make(chan *CompressionResult),
+		jobQueue:    make(chan *Job, 100),
+		resultQueue: make(chan *CompressionResult, 100),
 		ctx:         ctx,
 		cancel:      cancel,
 		bufferPool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return make([]byte, config.ChunkSize*1024*1024)
 			},
 		},
+	}
+}
+
+func (pc *ParallelCompressor) Start() {
+	for i := range pc.config.NumWorkers {
+		pc.workerWG.Add(1)
+		go pc.worker(i)
+	}
+}
+
+func (pc *ParallelCompressor) worker(workerID int) {
+	defer pc.workerWG.Done()
+
+	for {
+		select {
+		case job := <-pc.jobQueue:
+			if job == nil {
+				return
+			}
+
+			result := pc.processJob(job)
+
+			select {
+			case pc.resultQueue <- result:
+			case <-pc.ctx.Done():
+				return
+			}
+
+		case <-pc.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -72,6 +103,11 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 	result := &CompressionResult{
 		Job: job,
 	}
+
+	startTime := time.Now()
+	defer func() {
+		result.Duration = time.Since(startTime)
+	}()
 
 	inputFile, err := os.Open(job.InputPath)
 	if err != nil {
@@ -101,6 +137,9 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 		return result
 	}
 
+	outputFileStat, _ := outputFile.Stat()
+
+	result.CompressedSize = outputFileStat.Size()
 	return result
 }
 
