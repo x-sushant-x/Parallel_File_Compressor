@@ -196,11 +196,13 @@ func (pc *ParallelCompressor) processResult() {
 }
 
 func main() {
+	printMemUsage("Before")
+
 	config := &CompressionConfig{
 		NumWorkers:       8,
 		MaxMemoryUsage:   4 * 1024 * 1024,
 		CompressionLevel: 9,
-		ChunkSize:        4,
+		ChunkSize:        1,
 	}
 
 	compressor := NewParallelCompressor(config)
@@ -209,7 +211,7 @@ func main() {
 
 	files := []string{}
 
-	for i := 1; i <= 11; i++ {
+	for i := 1; i <= 13; i++ {
 		files = append(files, fmt.Sprintf("testdata/book%d.pdf", i))
 	}
 
@@ -235,7 +237,20 @@ func main() {
 
 	t := time.Since(now)
 
-	fmt.Printf("Time Taken: %d milliseconds\n", t.Milliseconds())
+	fmt.Printf("Time Taken: %d milliseconds\n\n", t.Milliseconds())
 
-	fmt.Println("All compression jobs completed.")
+	printMemUsage("After")
+
+}
+
+func printMemUsage(label string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	fmt.Printf("\n--- %s ---\n", label)
+	fmt.Printf("Alloc = %v MiB", m.Alloc/1024/1024)
+	fmt.Printf("\tTotalAlloc = %v MiB", m.TotalAlloc/1024/1024)
+	fmt.Printf("\tSys = %v MiB", m.Sys/1024/1024)
+
+	fmt.Println()
 }
