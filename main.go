@@ -62,7 +62,8 @@ func NewParallelCompressor(config *CompressionConfig) *ParallelCompressor {
 		cancel:      cancel,
 		bufferPool: sync.Pool{
 			New: func() any {
-				return make([]byte, config.ChunkSize*1024*1024)
+				buf := make([]byte, config.ChunkSize*1024*1024)
+				return &buf
 			},
 		},
 	}
@@ -122,7 +123,7 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 	}
 	defer outputFile.Close()
 
-	if err := compress(inputFile, outputFile); err != nil {
+	if err := pc.compress(inputFile, outputFile); err != nil {
 		return setError(result, err)
 	}
 
@@ -130,11 +131,34 @@ func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
 	return result
 }
 
-func compress(inputFile io.Reader, outputFile io.Writer) error {
-	gzipWriter := gzip.NewWriter(outputFile)
+func (pc *ParallelCompressor) compress(inputFile io.Reader, outputFile io.Writer) error {
+	gzipWriter, err := gzip.NewWriterLevel(outputFile, pc.config.CompressionLevel)
+	if err != nil {
+		return err
+	}
 	defer gzipWriter.Close()
 
-	_, err := io.Copy(gzipWriter, inputFile)
+	bufferPtr := pc.bufferPool.Get().(*[]byte)
+	buffer := *bufferPtr
+	defer pc.bufferPool.Put(bufferPtr)
+
+	for {
+		n, err := inputFile.Read(buffer)
+		if n > 0 {
+			if _, writeErr := gzipWriter.Write(buffer[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
 	return err
 }
 
@@ -163,8 +187,6 @@ func (pc *ParallelCompressor) processResult() {
 
 			if result.Error != nil {
 				fmt.Printf("Result Error: %s\n", result.Error.Error())
-			} else {
-				fmt.Printf("Compression Successfull: %s\n", result.Job.OutputPath)
 			}
 
 		case <-pc.ctx.Done():
@@ -175,9 +197,9 @@ func (pc *ParallelCompressor) processResult() {
 
 func main() {
 	config := &CompressionConfig{
-		NumWorkers:       0,
+		NumWorkers:       8,
 		MaxMemoryUsage:   4 * 1024 * 1024,
-		CompressionLevel: 10,
+		CompressionLevel: 9,
 		ChunkSize:        4,
 	}
 
@@ -213,7 +235,7 @@ func main() {
 
 	t := time.Since(now)
 
-	fmt.Printf("Time Taken: %d\n milliseconds", t.Milliseconds())
+	fmt.Printf("Time Taken: %d milliseconds\n", t.Milliseconds())
 
 	fmt.Println("All compression jobs completed.")
 }
