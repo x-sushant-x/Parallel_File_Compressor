@@ -69,16 +69,16 @@ func NewParallelCompressor(config *CompressionConfig) *ParallelCompressor {
 }
 
 func (pc *ParallelCompressor) Start() {
-	for i := range pc.config.NumWorkers {
+	for i := 0; i < pc.config.NumWorkers; i++ {
 		pc.workerWG.Add(1)
-		go pc.worker(i)
+		go pc.worker()
 	}
 
 	pc.resultWG.Add(1)
 	go pc.processResult()
 }
 
-func (pc *ParallelCompressor) worker(workerID int) {
+func (pc *ParallelCompressor) worker() {
 	defer pc.workerWG.Done()
 
 	for {
@@ -88,7 +88,6 @@ func (pc *ParallelCompressor) worker(workerID int) {
 				return
 			}
 
-			fmt.Printf("Job Picked By Worker: %d\n", workerID)
 			result := pc.processJob(job)
 
 			select {
@@ -104,47 +103,52 @@ func (pc *ParallelCompressor) worker(workerID int) {
 }
 
 func (pc *ParallelCompressor) processJob(job *Job) *CompressionResult {
-	result := &CompressionResult{
-		Job: job,
-	}
+	result := &CompressionResult{Job: job}
 
 	startTime := time.Now()
-	defer func() {
-		result.Duration = time.Since(startTime)
-	}()
+	defer func() { result.Duration = time.Since(startTime) }()
 
 	inputFile, err := os.Open(job.InputPath)
 	if err != nil {
-		result.Error = err
-		return result
+		return setError(result, err)
 	}
 	defer inputFile.Close()
 
-	stats, _ := inputFile.Stat()
-	size := stats.Size()
-
-	result.OriginalSize = size
+	result.OriginalSize = getFileSize(inputFile)
 
 	outputFile, err := os.Create(job.OutputPath)
 	if err != nil {
-		result.Error = err
-		return result
+		return setError(result, err)
 	}
 	defer outputFile.Close()
 
+	if err := compress(inputFile, outputFile); err != nil {
+		return setError(result, err)
+	}
+
+	result.CompressedSize = getFileSize(outputFile)
+	return result
+}
+
+func compress(inputFile io.Reader, outputFile io.Writer) error {
 	gzipWriter := gzip.NewWriter(outputFile)
 	defer gzipWriter.Close()
 
-	_, err = io.Copy(gzipWriter, inputFile)
+	_, err := io.Copy(gzipWriter, inputFile)
+	return err
+}
+
+func setError(r *CompressionResult, err error) *CompressionResult {
+	r.Error = err
+	return r
+}
+
+func getFileSize(file *os.File) int64 {
+	stat, err := file.Stat()
 	if err != nil {
-		result.Error = err
-		return result
+		return 0
 	}
-
-	outputFileStat, _ := outputFile.Stat()
-
-	result.CompressedSize = outputFileStat.Size()
-	return result
+	return stat.Size()
 }
 
 func (pc *ParallelCompressor) processResult() {
@@ -209,7 +213,7 @@ func main() {
 
 	t := time.Since(now)
 
-	fmt.Printf("Time Taken: %d\n", t.Milliseconds())
+	fmt.Printf("Time Taken: %d\n milliseconds", t.Milliseconds())
 
 	fmt.Println("All compression jobs completed.")
 }
